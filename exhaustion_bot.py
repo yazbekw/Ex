@@ -1,5 +1,4 @@
-import sys, time, json
-sys.path.insert(0, "/root/bot2")
+
 from datetime import datetime, timezone
 from pathlib import Path
 from collections import defaultdict
