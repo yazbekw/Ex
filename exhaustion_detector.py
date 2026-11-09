@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 
@@ -141,4 +140,3 @@ class ExhaustionDetector:
             return {"signal": False, "top": top, "bottom": bottom}
         best = max(signals, key=lambda x: x["momentum"])
         return {"signal": True, "best": best, "top": top, "bottom": bottom}
-ENDOFFILE
