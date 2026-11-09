@@ -1,4 +1,4 @@
-cat > /root/bot2/exhaustion_detector.py << 'ENDOFFILE'
+
 import numpy as np
 import pandas as pd
 
