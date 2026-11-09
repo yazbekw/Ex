@@ -1,30 +1,19 @@
-import sys, time, json
+import os, time, json
 from pathlib import Path
 from datetime import datetime, timezone
 import ccxt
 
-# ═══ المسار ليعمل على Render ═══
 BASE = Path(__file__).parent
 STATE_FILE = BASE / "exhaustion_logs" / "live_positions.json"
 LOSSES_FILE = BASE / "exhaustion_logs" / "consecutive_losses.json"
 LOG_FILE = BASE / "exhaustion_logs" / "live_trading.log"
 MAX_CONSECUTIVE_LOSSES = 2
 
-# ═══ قراءة المفاتيح من متغيرات البيئة (Render) ═══
-env = {}
-if (BASE / ".env").exists():
-    for line in (BASE / ".env").read_text(encoding="utf-8").splitlines():
-        if "=" in line and not line.startswith("#"):
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip().strip('"').strip("'")
-
-import os
-API_KEY = os.getenv("BINANCE_API_KEY") or env.get("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET") or env.get("BINANCE_API_SECRET")
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
 POSITION_SIZE_USDT = 100.0
 LEVERAGE = 50
 
-# ═══ دوال التسجيل ═══
 def log(msg):
     line = f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {msg}"
     print(line, flush=True)
@@ -34,7 +23,6 @@ def log(msg):
             f.write(line + "\n")
     except: pass
 
-# ═══ الاتصال بـ Binance ═══
 _ex = None
 def get_ex():
     global _ex
@@ -74,8 +62,7 @@ def record_outcome(coin, outcome, pnl_pct=0.0):
     elif outcome == "win": data["consecutive"] = 0
     data.setdefault("history", []).append({"coin": coin, "outcome": outcome, "pnl_pct": pnl_pct, "ts": datetime.now(timezone.utc).isoformat()})
     data["history"] = data["history"][-50:]
-    if data["consecutive"] >= MAX_CONSECUTIVE_LOSSES:
-        data["halted"] = True
+    if data["consecutive"] >= MAX_CONSECUTIVE_LOSSES: data["halted"] = True
     save_losses(data)
 
 def is_halted():
@@ -97,34 +84,25 @@ def open_position(coin, direction, entry_price, tp_price, sl_price, confidence, 
     ex = get_ex()
     sym = symbol(coin)
     if sym not in ex.markets: return None
-    
     halted, _ = is_halted()
     if halted: return None
-    
     state = load_state()
     if coin in state["positions"]: return None
-    
     try:
         try: ex.set_leverage(LEVERAGE, sym)
         except: pass
-        
         qty = amount(entry_price)
         side = "buy" if direction == "LONG" else "sell"
-        pos_side = "LONG" if direction == "LONG" else "SHORT"
-        
         order = ex.create_order(sym, "market", side, qty, params={"positionSide": "BOTH"})
-        
         time.sleep(1)
         positions = ex.fetch_positions([sym])
         is_open = any(p["symbol"] == sym and float(p.get("contracts", 0) or 0) > 0 for p in positions)
         if not is_open: return None
-        
         tp_side = "sell" if direction == "LONG" else "buy"
         try: ex.create_order(sym, "TAKE_PROFIT_MARKET", tp_side, qty, None, {"stopPrice": tp_price, "reduceOnly": True, "positionSide": "BOTH"})
         except: pass
         try: ex.create_order(sym, "STOP_MARKET", tp_side, qty, None, {"stopPrice": sl_price, "reduceOnly": True, "positionSide": "BOTH"})
         except: pass
-        
         state["positions"][coin] = {
             "direction": direction, "entry": entry_price, "tp": tp_price, "sl": sl_price,
             "qty": qty, "confidence": confidence, "momentum": momentum,
@@ -198,4 +176,3 @@ def get_all_open_symbols():
 
 def is_coin_already_open(coin):
     return coin in get_all_open_symbols()
-ENDOFFILE
