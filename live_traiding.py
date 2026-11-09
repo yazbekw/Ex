@@ -1,17 +1,16 @@
-
 import sys, time, json
-sys.path.insert(0, "/root/bot2")
 from pathlib import Path
 from datetime import datetime, timezone
 import ccxt
-import httpx
 
-BASE = Path("/root/bot2")
+# ═══ المسار ليعمل على Render ═══
+BASE = Path(__file__).parent
 STATE_FILE = BASE / "exhaustion_logs" / "live_positions.json"
 LOSSES_FILE = BASE / "exhaustion_logs" / "consecutive_losses.json"
 LOG_FILE = BASE / "exhaustion_logs" / "live_trading.log"
 MAX_CONSECUTIVE_LOSSES = 2
 
+# ═══ قراءة المفاتيح من متغيرات البيئة (Render) ═══
 env = {}
 if (BASE / ".env").exists():
     for line in (BASE / ".env").read_text(encoding="utf-8").splitlines():
@@ -19,20 +18,23 @@ if (BASE / ".env").exists():
             k, v = line.split("=", 1)
             env[k.strip()] = v.strip().strip('"').strip("'")
 
-API_KEY = env.get("BINANCE_API_KEY")
-API_SECRET = env.get("BINANCE_API_SECRET")
+import os
+API_KEY = os.getenv("BINANCE_API_KEY") or env.get("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET") or env.get("BINANCE_API_SECRET")
 POSITION_SIZE_USDT = 100.0
 LEVERAGE = 50
-MAX_POSITIONS = 11
 
+# ═══ دوال التسجيل ═══
 def log(msg):
     line = f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {msg}"
     print(line, flush=True)
     try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except: pass
 
+# ═══ الاتصال بـ Binance ═══
 _ex = None
 def get_ex():
     global _ex
