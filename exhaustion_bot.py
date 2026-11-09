@@ -197,6 +197,7 @@ def record_paper_trade(coin, direction, entry, tp, sl, max_hold):
     log(f"  📝 [PAPER] تم تسجيل صفقة ورقية: {coin} {direction}")
 
 def check_paper_trades(df_1h):
+    if df_1h is None: return
     if not PAPER_TRADES_FILE.exists(): return
     try: trades = json.loads(PAPER_TRADES_FILE.read_text())
     except: return
