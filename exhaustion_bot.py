@@ -481,11 +481,13 @@ def tg_polling_loop():
                         handle_message(upd["message"]["text"])
         except: time.sleep(5)
         time.sleep(1)
-
 def main():
     import threading
+    import traceback # ═══ أضفنا هذا لطباعة مكان الخطأ بدقة ═══
+    
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=tg_polling_loop, daemon=True).start()
+    
     log("🚀 ExhaustionBot v5.0 بدأ")
     detector = ExhaustionDetector()
     state = {"last_signals": {}, "last_rejected": {}}
@@ -496,11 +498,15 @@ def main():
         try:
             found = scan_once(detector, state)
             log(f"✅ دورة #{scans}: {found} إشارة جديدة")
+            
             global last_hourly_report_time
             if time.time() - last_hourly_report_time >= 3600:
                 last_hourly_report_time = time.time()
         except Exception as e:
+            # ═══ هذا السطر سيطبع لك السطر الدقيق الذي حدث فيه الخطأ ═══
             log(f"❌ خطأ: {e}")
+            log(traceback.format_exc())
+            
         time.sleep(SCAN_INTERVAL_SEC)
 
 if __name__ == "__main__":
