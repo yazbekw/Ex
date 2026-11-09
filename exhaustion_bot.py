@@ -246,4 +246,261 @@ def send_main_menu():
     except: pass
     text = f"🤖 <b>ExhaustionBot — لوحة التحكم</b>\n━━━━━━━━━━━━━━━━\n"
     text += f"الحالة: {'🟢 يعمل' if not is_bot_paused() else '⏸️ موقوف'}\n"
-    if halted: text += f"
+    if halted: text += f"🛑 <b>التداول موقوف</b> — {consec} خسائر متتالية\n"
+    text += f"💰 الصفقات المفتوحة: {open_count}\nاختر إجراءً:"
+    paused = is_bot_paused()
+    btn_pause = {"text": "▶️ تشغيل البوت" if paused else "⏸️ إيقاف البوت", "callback_data": "menu_run" if paused else "menu_stop"}
+    kb = [
+        [btn_pause, {"text": "📊 الحالة", "callback_data": "menu_status"}],
+        [{"text": "🔓 استئناف", "callback_data": "menu_reset"}, {"text": "💰 الصفقات", "callback_data": "menu_positions"}],
+        [{"text": "📈 الرصيد", "callback_data": "balance"}, {"text": "🚨 إغلاق الكل", "callback_data": "menu_close_all"}],
+        [{"text": "📋 تقرير اليوم", "callback_data": "menu_daily"}, {"text": "🔄 تحديث", "callback_data": "menu_refresh"}]
+    ]
+    send_tg(text, keyboard=kb)
+
+def handle_message(msg_text):
+    t = msg_text.strip().lower()
+    if t in ("/start", "/menu", "menu", "القائمة"):
+        send_main_menu()
+
+def tg_answer_callback(cb_id, text=""):
+    try: httpx.post(f"https://api.telegram.org/bot{TG_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id, "text": text}, timeout=5)
+    except: pass
+
+def tg_edit_message(msg_id, text, keyboard=None):
+    try:
+        payload = {"chat_id": TG_CHAT, "message_id": msg_id, "text": text, "parse_mode": "HTML"}
+        if keyboard: payload["reply_markup"] = {"inline_keyboard": keyboard}
+        httpx.post(f"https://api.telegram.org/bot{TG_TOKEN}/editMessageText", json=payload, timeout=10)
+    except: pass
+
+def handle_callback(cb_data, cb_id, msg_id):
+    if cb_data == "balance":
+        try:
+            ex = get_ex()
+            usdt = ex.fetch_balance().get("USDT", {})
+            txt = f"📈 <b>الرصيد:</b>\nالمتاح: {usdt.get('free', 0):.2f} USDT\nالإجمالي: {usdt.get('total', 0):.2f} USDT"
+        except Exception as e: txt = f"❌ خطأ: {e}"
+        tg_answer_callback(cb_id, "الرصيد")
+        tg_edit_message(msg_id, txt)
+    elif cb_data == "menu_status":
+        halted, consec = is_halted()
+        try:
+            ex = get_ex()
+            count = sum(1 for p in ex.fetch_positions() if float(p.get("contracts", 0) or 0) > 0)
+            txt = f"📊 الحالة: {'🛑 موقوف' if halted else '🟢 نشط'}\nالخسائر: {consec}\nالصفقات: {count}"
+        except: txt = f"📊 الحالة: {'🛑 موقوف' if halted else '🟢 نشط'}"
+        tg_edit_message(msg_id, txt)
+    elif cb_data == "menu_positions":
+        try:
+            ex = get_ex()
+            active = [p for p in ex.fetch_positions() if float(p.get("contracts", 0) or 0) > 0]
+            if not active: txt = "لا توجد صفقات."
+            else:
+                txt = "💼 <b>الصفقات:</b>\n"
+                for p in active:
+                    txt += f"- {p['symbol'].split('/')[0]}: {p['side']} {p['contracts']} @ {p['entryPrice']}\n"
+        except Exception as e: txt = f"❌ خطأ: {e}"
+        tg_edit_message(msg_id, txt)
+    elif cb_data == "menu_reset":
+        reset_halt(); tg_edit_message(msg_id, "🔓 تم الاستئناف."); send_main_menu()
+    elif cb_data == "menu_run":
+        set_bot_paused(False); tg_edit_message(msg_id, "▶️ تم التشغيل."); send_main_menu()
+    elif cb_data == "menu_stop":
+        set_bot_paused(True); tg_edit_message(msg_id, "⏸️ تم الإيقاف."); send_main_menu()
+    elif cb_data == "menu_close_all":
+        state = load_state()
+        for coin in list(state.get('positions', {}).keys()): close_position(coin, "telegram")
+        tg_edit_message(msg_id, f"🚨 تم إغلاق {len(state.get('positions', {}))} صفقة."); send_main_menu()
+    elif cb_data == "menu_daily":
+        losses = load_losses() if 'load_losses' in globals() else {}
+        hist = losses.get("history", [])
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_hist = [h for h in hist if h.get("ts", "").startswith(today)]
+        w = sum(1 for h in today_hist if h["outcome"] == "win")
+        l = sum(1 for h in today_hist if h["outcome"] == "loss")
+        pnl = sum(h.get("pnl_pct", 0) for h in today_hist)
+        wr = w/(w+l)*100 if (w+l) > 0 else 0
+        tg_edit_message(msg_id, f"📋 تقرير اليوم\nالصفقات: {len(today_hist)}\n✅ {w} | ❌ {l}\nWR: {wr:.1f}%\nPnL: {pnl:+.2f}%")
+    elif cb_data == "menu_refresh":
+        send_main_menu()
+
+def scan_once(detector, state):
+    found = 0
+    if is_bot_paused(): return 0
+    try:
+        df_1h_btc = fetch_ohlcv("BTC", "1h")
+        if df_1h_btc is not None: check_paper_trades(df_1h_btc.iloc[:-1])
+    except: pass
+    if LIVE_TRADING:
+        halted, _ = is_halted()
+        if halted:
+            try: sync_positions()
+            except: pass
+            return 0
+
+    for coin in COINS:
+        df = fetch_ohlcv(coin, "1h")
+        if df is None or len(df) < 50: continue
+        df_closed = df.iloc[:-1]
+        if len(df_closed) < 30: continue
+        for direction in ("top", "bottom"):
+            sig = detector.detect(df_closed, direction)
+            if not sig.get("signal"): continue
+            try:
+                df_5m = fetch_5m(coin)
+                if df_5m is None: continue
+                df_5m_closed = df_5m.iloc[:-1]
+                if len(df_5m_closed) < 20: continue
+                st_val = int(compute_supertrend(df_5m_closed)[-1]) if len(compute_supertrend(df_5m_closed)) > 0 else 0
+                if not ((direction == "top" and st_val == -1) or (direction == "bottom" and st_val == 1)): continue
+            except: continue
+
+            key = f"{coin}_1h_{direction}"
+            now_ts = df_closed.index[-1].isoformat()
+            if state["last_signals"].get(key) == now_ts: continue
+            last_ts = state["last_signals"].get(key)
+            if last_ts:
+                try:
+                    hours = (pd.to_datetime(now_ts) - pd.to_datetime(last_ts)).total_seconds() / 3600
+                    if hours < COOLDOWN_CANDLES: continue
+                except: pass
+
+            log(f"  🎯 {coin} {direction} | conf={sig['confidence']}% | mom={sig['momentum']}")
+            kb = [
+                [{"text": "🛑 إغلاق الصفقة", "callback_data": f"close_{coin}"}, {"text": "📊 تحديث", "callback_data": f"status_{coin}"}],
+                [{"text": "📈 الرصيد", "callback_data": "balance"}, {"text": "🔄 تحديث الإشارة", "callback_data": f"refresh_{coin}"}]
+            ]
+
+            execution_success = False
+            if LIVE_TRADING:
+                now_utc = datetime.now(timezone.utc)
+                current_hour = now_utc.hour
+                current_day = (now_utc.weekday() + 1) % 7
+                if (current_hour, current_day) in LIVE_HOURS_WHITELIST:
+                    try:
+                        adx_val = compute_adx(df_closed, 14).iloc[-1] if not pd.isna(compute_adx(df_closed, 14).iloc[-1]) else 0
+                        if adx_val > 30:
+                            log(f"  🚫 مرفوضة (ADX {adx_val:.1f})")
+                            cfg = COIN_CONFIG.get(coin, {"tp_atr": 2.0, "sl_atr": 2.0, "max_hold": 30})
+                            entry = float(sig["entry_price"]); atr = float(sig["atr"])
+                            tp_p = entry + cfg["tp_atr"]*atr if sig["direction"]=="LONG" else entry - cfg["tp_atr"]*atr
+                            sl_p = entry - cfg["sl_atr"]*atr if sig["direction"]=="LONG" else entry + cfg["sl_atr"]*atr
+                            record_paper_trade(coin, sig["direction"], entry, round(tp_p,6), round(sl_p,6), cfg["max_hold"])
+                            send_tg(f"🚫 <b>رفض (ADX مرتفع)</b>\n🪙 {coin}\nADX: {adx_val:.1f}")
+                            state["last_signals"][key] = now_ts
+                            execution_success = True
+                            break
+                    except Exception as e: log(f"  ⚠️ ADX: {e}")
+                    try:
+                        if is_coin_already_open(coin):
+                            log(f"  🚫 مرفوضة (مفتوحة)")
+                            cfg = COIN_CONFIG.get(coin, {"tp_atr": 2.0, "sl_atr": 2.0, "max_hold": 30})
+                            entry = float(sig["entry_price"]); atr = float(sig["atr"])
+                            tp_p = entry + cfg["tp_atr"]*atr if sig["direction"]=="LONG" else entry - cfg["tp_atr"]*atr
+                            sl_p = entry - cfg["sl_atr"]*atr if sig["direction"]=="LONG" else entry + cfg["sl_atr"]*atr
+                            record_paper_trade(coin, sig["direction"], entry, round(tp_p,6), round(sl_p,6), cfg["max_hold"])
+                            send_tg(f"🚫 <b>رفض (مفتوحة)</b>\n🪙 {coin}")
+                            state["last_signals"][key] = now_ts
+                            execution_success = True
+                            break
+                        if count_open_trades() >= MAX_CONCURRENT_TRADES:
+                            log(f"  🚫 مرفوضة (تجاوز الحد)")
+                            cfg = COIN_CONFIG.get(coin, {"tp_atr": 2.0, "sl_atr": 2.0, "max_hold": 30})
+                            entry = float(sig["entry_price"]); atr = float(sig["atr"])
+                            tp_p = entry + cfg["tp_atr"]*atr if sig["direction"]=="LONG" else entry - cfg["tp_atr"]*atr
+                            sl_p = entry - cfg["sl_atr"]*atr if sig["direction"]=="LONG" else entry + cfg["sl_atr"]*atr
+                            record_paper_trade(coin, sig["direction"], entry, round(tp_p,6), round(sl_p,6), cfg["max_hold"])
+                            send_tg(f"🚫 <b>رفض (تجاوز الحد)</b>\n🪙 {coin}")
+                            state["last_signals"][key] = now_ts
+                            execution_success = True
+                            break
+                    except Exception as e: log(f"  ⚠️ فحص: {e}")
+                    try:
+                        cfg = COIN_CONFIG.get(coin, {"tp_atr": 2.0, "sl_atr": 2.0, "max_hold": 30})
+                        entry = float(sig["entry_price"]); atr = float(sig["atr"])
+                        tp_price = entry + cfg["tp_atr"]*atr if sig["direction"]=="LONG" else entry - cfg["tp_atr"]*atr
+                        sl_price = entry - cfg["sl_atr"]*atr if sig["direction"]=="LONG" else entry + cfg["sl_atr"]*atr
+                        sig['tp_price'] = round(tp_price, 6); sig['sl_price'] = round(sl_price, 6)
+                        if open_position(coin, sig["direction"], entry, round(tp_price, 6), round(sl_price, 6), sig["confidence"], sig["momentum"]):
+                            log(f"  💰 [LIVE] {coin}")
+                            execution_success = True
+                    except Exception as e: log(f"  ❌ live: {e}")
+                else:
+                    log(f"  📝 [PAPER] {coin}")
+                    cfg = COIN_CONFIG.get(coin, {"tp_atr": 2.0, "sl_atr": 2.0, "max_hold": 30})
+                    entry = float(sig["entry_price"]); atr = float(sig["atr"])
+                    tp_p = entry + cfg["tp_atr"]*atr if sig["direction"]=="LONG" else entry - cfg["tp_atr"]*atr
+                    sl_p = entry - cfg["sl_atr"]*atr if sig["direction"]=="LONG" else entry + cfg["sl_atr"]*atr
+                    record_paper_trade(coin, sig["direction"], entry, round(tp_p,6), round(sl_p,6), cfg["max_hold"])
+                    execution_success = True
+
+            if execution_success:
+                try: send_tg(format_signal(coin, "1h", sig), keyboard=kb)
+                except Exception as e: log(f"  ⚠️ TG: {e}")
+                record_signal(coin, "1h", sig, detector)
+                state["last_signals"][key] = now_ts
+                found += 1
+    if LIVE_TRADING:
+        try: sync_positions()
+        except: pass
+    return found
+
+def heartbeat_loop():
+    log("❤️ نبضة بدأت")
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            ch = now.hour; cd = (now.weekday() + 1) % 7
+            dn = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'][cd]
+            w = (ch, cd) in LIVE_HOURS_WHITELIST
+            st = "⚪ بيضاء" if w else "⚫ سوداء"
+            nh = (ch + 1) % 24; nd = cd if nh > 0 else (cd + 1) % 7
+            nw = (nh, nd) in LIVE_HOURS_WHITELIST
+            nst = "⚪ بيضاء" if nw else "⚫ سوداء"
+            send_tg(f"⏰ <b>نبضة</b>\n🕐 {ch:02d}:00 ({dn}) | {st}\n⏳ {nh:02d}:00 | {nst}", silent=True)
+            time.sleep(3600 - (now.minute * 60 + now.second) if (3600 - (now.minute * 60 + now.second)) > 10 else 3600)
+        except Exception as e:
+            log(f"❌ نبضة: {e}")
+            time.sleep(60)
+
+def tg_polling_loop():
+    offset = 0
+    log("🤖 مستمع بدأ")
+    while True:
+        try:
+            r = httpx.get(f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates", params={"offset": offset, "timeout": 20}, timeout=25)
+            if r.status_code == 200:
+                for upd in r.json().get("result", []):
+                    offset = upd["update_id"] + 1
+                    if "callback_query" in upd:
+                        cb = upd["callback_query"]
+                        handle_callback(cb.get("data", ""), cb["id"], cb["message"]["message_id"])
+                    elif "message" in upd and "text" in upd["message"]:
+                        handle_message(upd["message"]["text"])
+        except: time.sleep(5)
+        time.sleep(1)
+
+def main():
+    import threading
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
+    threading.Thread(target=tg_polling_loop, daemon=True).start()
+    log("🚀 ExhaustionBot v5.0 بدأ")
+    detector = ExhaustionDetector()
+    state = {"last_signals": {}, "last_rejected": {}}
+    scans = 0
+    while True:
+        scans += 1
+        log(f"── دورة #{scans} ──")
+        try:
+            found = scan_once(detector, state)
+            log(f"✅ دورة #{scans}: {found} إشارة جديدة")
+            global last_hourly_report_time
+            if time.time() - last_hourly_report_time >= 3600:
+                last_hourly_report_time = time.time()
+        except Exception as e:
+            log(f"❌ خطأ: {e}")
+        time.sleep(SCAN_INTERVAL_SEC)
+
+if __name__ == "__main__":
+    main()
