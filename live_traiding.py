@@ -1,4 +1,4 @@
-cat > /root/bot2/live_trading.py << 'ENDOFFILE'
+
 import sys, time, json
 sys.path.insert(0, "/root/bot2")
 from pathlib import Path
